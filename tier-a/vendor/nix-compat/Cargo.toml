@@ -1,0 +1,43 @@
+[package]
+name = "nix-compat"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0"
+publish = false
+
+# Vendored, trimmed copy of the `nix-compat/` crate from
+# https://github.com/tvlfyi/tvix.git at rev
+# 9fbca101331eecbf5c1cd44861f3d24aff101b82 (same commit as ../tvix-eval; see
+# docs/spikes/A2-snix.md and nixbox/README.md). Only the modules `derivation`
+# needs are kept (`derivation`, `aterm`, `nixbase32`, `nixhash`,
+# `store_path`) — `nar`, `narinfo`, `nix_daemon`, `nix_http`, `nixcpp`,
+# `wire`, `log` and `path_info` were deleted along with their (`tokio`,
+# `ed25519`/`ed25519-dalek`, `futures`, `pin-project-lite`, `num_enum`,
+# `bitflags`, `tracing`, `mimalloc`) dependencies: none of those target
+# wasm32-unknown-unknown cleanly (ed25519-dalek's key generation needs a
+# real RNG; mimalloc is a native allocator) and derivation/store-path
+# computation doesn't need any of them. `src/bin/drvfmt.rs` (a CLI, the
+# crate's only `mimalloc` user) and `benches/`/`testdata/` (fixtures for
+# the deleted modules' tests) were also deleted.
+#
+# License: GPL-3.0 (from upstream `tvix`), acceptable per
+# docs/ARCHITECTURE.md ("Internal audience only. GPL/LGPL runtimes are
+# acceptable."). See LICENSE in ../tvix-eval (same upstream repo, one
+# LICENSE file covers both vendored crates).
+
+[features]
+default = []
+test = []
+
+[dependencies]
+bstr = { version = "1.10.0", features = ["alloc", "unicode", "serde"] }
+data-encoding = "2.6.0"
+nom = "8.0"
+serde = { version = "1.0.209", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10.8"
+thiserror = "2.0"
+
+[dev-dependencies]
+hex-literal = "0.4.1"
+rstest = "0.19.0"
