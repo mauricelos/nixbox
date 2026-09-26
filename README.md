@@ -164,7 +164,7 @@ npm test    # runs everything under vitest.config.ts's `include`, which
 ```
 
 `nixbox/tier-a/test/parity.test.ts` runs every snippet in
-`spikes/parity/snippets/` through the evaluator and checks it against its
+`nixbox/tier-a/test/snippets/` through the evaluator and checks it against its
 `.expected` file: value-exact (the `printed` field) for a value snippet,
 primary-message-exact (the last `error: ...` line) for an error snippet.
 35/35 required snippets pass. Two bonus snippets beyond the required

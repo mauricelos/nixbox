@@ -1,5 +1,5 @@
 /**
- * Runs every snippet in spikes/parity/snippets/ through the committed
+ * Runs every snippet in nixbox/tier-a/test/snippets/ through the committed
  * nodejs-target wasm build (nixbox/tier-a/pkg-node/, produced by
  * nixbox/build.sh) and checks it against its `.expected` file: value-exact
  * for a printing snippet, primary-message-exact (the last `error: ...`
@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
 
 const TIER_A_DIR = path.resolve(import.meta.dirname, "..");
-const SNIPPETS_DIR = path.resolve(TIER_A_DIR, "../../spikes/parity/snippets");
+const SNIPPETS_DIR = path.resolve(import.meta.dirname, "snippets");
 const PKG_NODE = path.join(TIER_A_DIR, "pkg-node", "nixbox_tier_a.cjs");
 
 type EvalResult = {
@@ -61,7 +61,7 @@ function loadSnippets(): Snippet[] {
   return out;
 }
 
-/** The primary error message: the last `error: ...` line, per spikes/parity/README.md. */
+/** The primary error message: the last `error: ...` line, per nixbox/tier-a/test/snippets/README.md. */
 function primaryErrorMessage(expectedText: string): string | null {
   let last: string | null = null;
   for (const line of expectedText.split("\n")) {
@@ -105,7 +105,7 @@ function compare(expectedText: string, result: EvalResult): { pass: boolean; det
 //     carries neither — same story, needs an upstream patch, deferred.
 const KNOWN_GAPS = new Set(["36-select-on-function", "37-elemat-oob"]);
 
-describe("NixBox tier A parity (spikes/parity/snippets)", () => {
+describe("NixBox tier A parity (nixbox/tier-a/test/snippets)", () => {
   const { eval_json } = require(PKG_NODE) as { eval_json: (input: string) => string };
   const snippets = loadSnippets();
 

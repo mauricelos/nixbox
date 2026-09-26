@@ -1,0 +1,6 @@
+error: attribute 'versoin' missing
+       at 12-missing-attr.nix:1:32:
+            1| let s = { version = "1"; }; in s.versoin
+             |                                ^
+            2|
+       Did you mean version?

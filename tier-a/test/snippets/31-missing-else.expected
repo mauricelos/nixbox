@@ -1,0 +1,5 @@
+error: syntax error, unexpected end of file, expecting ELSE
+       at 31-missing-else.nix:2:1:
+            1| if true then 1
+            2|
+             | ^

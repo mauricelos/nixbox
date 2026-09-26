@@ -1,0 +1,8 @@
+error:
+       … while calling the 'div' builtin
+         at 21-divzero.nix:1:3:
+            1| 1 / 0
+             |   ^
+            2|
+
+       error: division by zero

@@ -1,0 +1,5 @@
+error: attempt to call something which is not a function but a set: { a = 1; }
+       at 29-set-not-function.nix:1:24:
+            1| let s = { a = 1; }; in s 1
+             |                        ^
+            2|

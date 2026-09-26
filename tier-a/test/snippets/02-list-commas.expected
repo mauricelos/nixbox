@@ -1,0 +1,5 @@
+error: syntax error, unexpected ','
+       at 02-list-commas.nix:1:8:
+            1| [ "git", "jq" ]
+             |        ^
+            2|

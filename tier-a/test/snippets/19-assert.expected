@@ -1,0 +1,8 @@
+error:
+       … while evaluating the condition of the assertion '(1 == 2)'
+         at 19-assert.nix:1:1:
+            1| assert 1 == 2; "never"
+             | ^
+            2|
+
+       error: an integer with value '1' is not equal to an integer with value '2'

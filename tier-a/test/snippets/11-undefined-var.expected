@@ -1,0 +1,5 @@
+error: undefined variable 'y'
+       at 11-undefined-var.nix:1:15:
+            1| let x = 1; in y
+             |               ^
+            2|

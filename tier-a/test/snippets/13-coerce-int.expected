@@ -1,0 +1,8 @@
+error:
+       … while evaluating a path segment
+         at 13-coerce-int.nix:1:10:
+            1| "answer: ${42}"
+             |          ^
+            2|
+
+       error: cannot coerce an integer to a string: 42

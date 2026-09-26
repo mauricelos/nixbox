@@ -1,0 +1,8 @@
+error:
+       … while evaluating one of the elements to concatenate
+         at 40-concat-not-list.nix:1:5:
+            1| "a" ++ "b"
+             |     ^
+            2|
+
+       error: expected a list but found a string: "a"

@@ -1,0 +1,5 @@
+error: infinite recursion encountered
+       at 14-infinite-recursion.nix:1:9:
+            1| let x = x + 1; in x
+             |         ^
+            2|

@@ -1,0 +1,10 @@
+error:
+       … while calling the 'attrNames' builtin
+         at 32-list-not-set.nix:1:1:
+            1| builtins.attrNames [ 1 2 ]
+             | ^
+            2|
+
+       … while evaluating the argument passed to builtins.attrNames
+
+       error: expected a set but found a list: [ 1 2 ]

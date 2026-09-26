@@ -1,0 +1,8 @@
+error:
+       … while evaluating a path segment
+         at 30-coerce-set.nix:1:2:
+            1| "${{ a = 1; }}"
+             |  ^
+            2|
+
+       error: cannot coerce a set to a string: { a = 1; }

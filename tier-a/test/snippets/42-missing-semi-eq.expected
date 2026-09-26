@@ -1,0 +1,5 @@
+error: syntax error, unexpected '=', expecting ';'
+       at 42-missing-semi-eq.nix:2:11:
+            1| { name = "pkg"
+            2|   version = "2.47.0"; }
+             |           ^

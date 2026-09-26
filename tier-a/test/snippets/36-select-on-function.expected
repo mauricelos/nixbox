@@ -1,0 +1,8 @@
+error:
+       … while selecting an attribute
+         at 36-select-on-function.nix:1:1:
+            1| (x: x).foo
+             | ^
+            2|
+
+       error: expected a set but found a function: «lambda @ 36-select-on-function.nix:1:2»
