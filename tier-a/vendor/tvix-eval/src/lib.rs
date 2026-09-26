@@ -123,6 +123,7 @@ impl<'co, 'ro, 'env> EvaluationBuilder<'co, 'ro, 'env> {
                     src_builtins,
                     source_map.clone(),
                     self.enable_import,
+                    self.io_handle.clone(),
                 )
             }
         };
@@ -458,6 +459,7 @@ impl Evaluation<'_, '_, '_> {
             self.globals,
             self.env,
             compiler_observer,
+            &self.io_handle,
         );
 
         result
@@ -493,6 +495,7 @@ impl Evaluation<'_, '_, '_> {
             self.globals.clone(),
             self.env,
             compiler_observer,
+            &self.io_handle,
         ) {
             None => return result,
             Some(cr) => cr,
@@ -563,6 +566,7 @@ fn parse_compile_internal(
     globals: Rc<GlobalsMap>,
     env: Option<&FxHashMap<SmolStr, Value>>,
     compiler_observer: &mut dyn CompilerObserver,
+    io: &Rc<dyn EvalIO>,
 ) -> Option<Rc<Lambda>> {
     let parsed = rnix::ast::Root::parse(code);
     let parse_errors = parsed.errors();
@@ -589,6 +593,7 @@ fn parse_compile_internal(
         &source,
         &file,
         compiler_observer,
+        io,
     ) {
         Ok(result) => result,
         Err(err) => {

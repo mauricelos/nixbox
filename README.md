@@ -15,8 +15,8 @@ runs in an in-memory virtual filesystem per request.
 
 - `tier-a/` — the Rust crate (`nixbox-tier-a`), compiled to wasm.
   - `src/lib.rs` — `EvalRequest`/`EvalResponse`, the in-memory `EvalIO` VFS
-    (`VfsIo`, with two documented wasm-specific workarounds), and
-    `run_eval`, the eval entry point.
+    (`VfsIo`), and `run_eval`, the eval entry point. `VfsIo` no longer needs
+    any wasm-specific workarounds (it did briefly — see the patches below).
   - `src/cppnix.rs` — maps `tvix_eval::ErrorKind` (and rnix parser errors)
     to CppNix 2.28's exact primary-message wording, using spans/source text
     to recover details CppNix's message needs but tvix's `ErrorKind` alone
@@ -29,17 +29,75 @@ runs in an in-memory virtual filesystem per request.
     copies of the pinned tvix commit (`9fbca101331eecbf5c1cd44861f3d24aff101b82`,
     the public `tvlfyi/tvix` mirror — `snix-eval`'s upstream home,
     `git.snix.dev`, is blocked by network policy), trimmed to what's needed
-    for wasm32 and patched:
-    - a few `ErrorKind` variants (`TypeError`, `NotCallable`,
+    for wasm32 and patched (all called out at the top of `tier-a/Cargo.toml`
+    too):
+    - A few `ErrorKind` variants (`TypeError`, `NotCallable`,
       `NotCoercibleToString`) gained a `value: String` field, so
       `cppnix.rs` can put the actual value in the message the way CppNix
-      does.
+      does; `VariableAlreadyDefined` gained a `name: String` field (see
+      below).
     - `Compiler::new` no longer calls `std::env::current_dir()` (unavailable
       on wasm32) when compiling with no source location — needed for
       `add_src_builtin` (the well-known `derivation` function) to work at
-      all on wasm32. See the "NixBox wasm32 patch" comment in
-      `vendor/tvix-eval/src/compiler/mod.rs`.
-    Both patches are called out at the top of `tier-a/Cargo.toml`.
+      all on wasm32.
+    - **`Compiler::new`'s and the `import` builtin's directory/file checks
+      now go through the configured `EvalIO` instead of `std::fs`.**
+      `Compiler::new` decided whether to pop a path's last segment
+      (`root_dir.is_file()`) and `import` decided whether to append
+      `default.nix` (`path.is_dir()`) by asking the *host's real
+      filesystem* directly — always false on wasm32 (there is no real
+      filesystem), so a nested relative import (`check.nix` imports
+      `./learner.nix`, which imports `./pkgs.nix`) kept accumulating a path
+      segment per import level instead of resolving normally, and `import
+      ./some-dir` never found its `default.nix`. Both are now threaded an
+      `Rc<dyn EvalIO>` (from `EvaluationBuilder`'s own `io_handle`, the same
+      one `VfsIo` implements) and ask *it* instead — see the "NixBox
+      wasm32 patch" comments in `vendor/tvix-eval/src/compiler/mod.rs` and
+      `compiler/import.rs`. This is also correct off wasm32 (`StdIO`'s
+      `file_type` uses real `std::fs::symlink_metadata`, equivalent to the
+      old checks), so it fixed the bug at its root instead of adding a
+      third layer of `VfsIo` aliasing — the two `VfsIo` workarounds this
+      replaced (serving every file at `"<entry>/<name>"` too, and a
+      `default.nix` fallback in `open()`) have been removed as
+      unnecessary.
+    - **Duplicate-attribute wording.** `{ greeting = "hi"; greeting = "yo"; }`
+      used to report tvix's generic `variable has already been defined`
+      (no name, no location) via `ErrorKind::VariableAlreadyDefined`, which
+      only actually fired for `let`/`rec` bindings — a plain (non-`rec`)
+      attrset's flat duplicate keys had *no* compile-time check at all,
+      falling through to an even less specific runtime-only
+      `DuplicateAttrsKey` error. Real Nix reports both cases identically
+      (`let` and attrset bindings desugar the same way in its own
+      implementation): `attribute 'name' already defined at
+      file:line:col`, naming the *previous* definition's location.
+      `VariableAlreadyDefined` gained a `name` field, and
+      `compiler/bindings.rs`'s plain-attrset path (`declare_bindings`) now
+      also runs this same check for a flat (non-nested) key repeated
+      within one non-recursive attrset literal, using the same error kind
+      and CppNix-worded message as the `let`/`rec` case. (A duplicate
+      buried inside a *nested* attrpath — `{ a.b = 1; a.b = 2; }` — still
+      falls back to the older, span-less `DuplicateAttrsKey` message; not
+      required by the corpus this fixed, and left as a smaller documented
+      gap rather than pursued further.)
+    - **Binary-operator operand order.** `Op::Concat` (`++`) and
+      `Op::AttrsUpdate` (`//`) used to type-check their *right* operand
+      before their left one, so e.g. `"a" ++ "b"` reported the right
+      operand's type (`"b"`) instead of the left's (`"a"`) — the opposite
+      of CppNix, which always forces and checks its left operand first.
+      Both ops now check `lhs` before `rhs`. (Arithmetic `+`/`-`/`*`/`/`
+      were already lhs-first; comparison operators use a different,
+      unrelated error shape — `Incomparable{lhs,rhs}`, reporting both
+      types at once — not affected by this bug.)
+    - **Syntax-error wording.** `rnix::parser::ParseError::UnexpectedWanted`'s
+      reported range is not one token — rnix's error recovery keeps
+      bumping tokens until it finds an allowed continuation, so the range
+      covers everything it skipped (e.g. `= "2.47.0"`, two tokens, for a
+      single unexpected `=`). CppNix's bison-generated parser reports only
+      the one offending token. `cppnix.rs`'s `first_token_text` now
+      re-tokenizes from the range's start and takes just the first token.
+      Separately, `expecting_name`'s punctuation table quoted the expected
+      token with double quotes (`expecting ";"`); CppNix uses single quotes
+      (`expecting ';'`).
   - `examples/parity.rs`, `examples/pkgs_check.rs` — native (non-wasm) dev
     tools for fast iteration; `cargo run --example parity` runs the same
     corpus as the vitest suite, natively, in ~1s instead of a full wasm

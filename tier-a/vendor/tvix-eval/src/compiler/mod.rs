@@ -30,6 +30,7 @@ use crate::CoercionKind;
 use crate::SourceCode;
 use crate::chunk::Chunk;
 use crate::errors::{CatchableErrorKind, Error, ErrorKind, EvalResult};
+use crate::io::{EvalIO, FileType};
 use crate::observer::CompilerObserver;
 use crate::opcode::{CodeIdx, Op, Position, UpvalueIdx};
 use crate::spans::ToSpan;
@@ -189,6 +190,7 @@ impl<'source, 'observer> Compiler<'source, 'observer> {
         source: &'source SourceCode,
         file: &'source codemap::File,
         observer: &'observer mut dyn CompilerObserver,
+        io: &Rc<dyn EvalIO>,
     ) -> EvalResult<Self> {
         let mut root_dir = match location {
             Some(dir) if cfg!(target_arch = "wasm32") || dir.is_absolute() => Ok(dir),
@@ -223,7 +225,18 @@ impl<'source, 'observer> Compiler<'source, 'observer> {
         // If the path passed from the caller points to a file, the
         // filename itself needs to be truncated as this must point to a
         // directory.
-        if root_dir.is_file() {
+        //
+        // NixBox wasm32 patch: this used to ask `std::fs` directly
+        // (`root_dir.is_file()`), which is always false on wasm32 (there is
+        // no real filesystem), so a nested relative import (e.g. `check.nix`
+        // imports `./learner.nix`, which imports `./pkgs.nix`) never got its
+        // directory popped and kept accumulating a path segment per import
+        // level (`check.nix/learner.nix/pkgs.nix` instead of `pkgs.nix`).
+        // Ask the configured `EvalIO` instead — its `file_type` goes through
+        // the virtual filesystem on wasm32, and `StdIO::file_type` (real
+        // `std::fs::symlink_metadata`) behaves the same as `is_file()` did
+        // for the native case, so this is a no-op change off wasm32.
+        if io.file_type(&root_dir).ok() == Some(FileType::Regular) {
             root_dir.pop();
         }
 
@@ -1441,12 +1454,13 @@ impl Compiler<'_, '_> {
         }
 
         let span = self.span_for(node);
+        let name_for_error = name.clone();
         let (idx, shadowed) = self.scope_mut().declare_local(name, span);
 
         if let Some(shadow_idx) = shadowed {
             let other = &self.scope()[shadow_idx];
             if other.depth == depth {
-                self.emit_error(node, ErrorKind::VariableAlreadyDefined(other.span));
+                self.emit_error(node, ErrorKind::VariableAlreadyDefined(name_for_error, other.span));
             }
         }
 
@@ -1534,6 +1548,7 @@ fn compile_src_builtin(
     code: &str,
     source: SourceCode,
     weak: &Weak<GlobalsMap>,
+    io: Rc<dyn EvalIO>,
 ) -> Value {
     use std::fmt::Write;
 
@@ -1560,6 +1575,7 @@ fn compile_src_builtin(
             &source,
             &file,
             &mut crate::observer::NoOpObserver {},
+            &io,
         )
         .map_err(|e| ErrorKind::NativeError {
             gen_type: "derivation",
@@ -1590,6 +1606,7 @@ pub fn prepare_globals(
     src_builtins: Vec<(&'static str, &'static str)>,
     source: SourceCode,
     enable_import: bool,
+    io: Rc<dyn EvalIO>,
 ) -> Rc<GlobalsMap> {
     Rc::new_cyclic(Box::new(move |weak: &Weak<GlobalsMap>| {
         // First step is to construct the builtins themselves as
@@ -1601,7 +1618,7 @@ pub fn prepare_globals(
         // to instantiate its compiler, the `Weak` reference is passed
         // here.
         if enable_import {
-            let import = Value::Builtin(import::builtins_import(weak, source.clone()));
+            let import = Value::Builtin(import::builtins_import(weak, source.clone(), io.clone()));
             builtins.insert("import", import);
         }
 
@@ -1632,8 +1649,9 @@ pub fn prepare_globals(
 
         // If "source builtins" were supplied, compile them and insert
         // them.
+        let io_for_src_builtins = io.clone();
         builtins.extend(src_builtins.into_iter().map(move |(name, code)| {
-            let compiled = compile_src_builtin(name, code, source.clone(), weak);
+            let compiled = compile_src_builtin(name, code, source.clone(), weak, io_for_src_builtins.clone());
             (name, compiled)
         }));
 
@@ -1656,6 +1674,7 @@ pub fn prepare_globals(
     }))
 }
 
+#[allow(clippy::too_many_arguments)] // internal API, no point making an indirection type
 pub fn compile(
     expr: &ast::Expr,
     location: Option<PathBuf>,
@@ -1664,8 +1683,9 @@ pub fn compile(
     source: &SourceCode,
     file: &codemap::File,
     observer: &mut dyn CompilerObserver,
+    io: &Rc<dyn EvalIO>,
 ) -> EvalResult<CompilationOutput> {
-    let mut c = Compiler::new(location, globals.clone(), env, source, file, observer)?;
+    let mut c = Compiler::new(location, globals.clone(), env, source, file, observer, io)?;
 
     let root_span = c.span_for(expr);
     let root_slot = c.scope_mut().declare_phantom(root_span, false);

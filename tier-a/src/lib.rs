@@ -82,26 +82,22 @@ fn normalize(path: &Path) -> String {
 }
 
 impl VfsIo {
-    /// `entry` is aliased in as a workaround for a real tvix-eval quirk on
-    /// wasm32: `Compiler::new` decides whether a `location` PathBuf is a
-    /// directory or a file via `std::fs::Path::is_file()` to decide whether
-    /// to pop the last segment before resolving relative imports — but on
-    /// wasm32 there is no real filesystem, so `is_file()` is always false
-    /// and the entry file's own path is used, unpopped, as the import
-    /// root. A one-file `import ./sibling.nix` from `entry` therefore
-    /// resolves to `"<entry>/sibling.nix"` instead of `"sibling.nix"`. We
-    /// work around it by also serving every file at `"<entry>/<name>"`, one
-    /// level deep. See docs/spikes/A2-snix.md ("import + virtual FS").
-    fn new(files: HashMap<String, String>, entry: &str) -> Self {
-        let entry_key = normalize(Path::new(entry));
+    /// This used to also alias every file in as `"<entry>/<name>"`, and
+    /// `open()` used to paper over directory imports by trying
+    /// `"<key>/default.nix"` — both workarounds for the same real
+    /// tvix-eval bug: `Compiler::new` (via `root_dir.is_file()`) and the
+    /// `import` builtin (via `path.is_dir()`) used to ask `std::fs`
+    /// directly, which is always wrong on wasm32 (no real filesystem), so
+    /// nested relative imports kept accumulating path segments and
+    /// directory imports never got their `default.nix` appended. Both are
+    /// now fixed at the root — `vendor/tvix-eval/src/compiler/mod.rs` and
+    /// `compiler/import.rs` ask the `EvalIO` passed in here instead (see
+    /// nixbox/README.md) — so this constructor no longer needs to alias
+    /// anything, and `open()` no longer needs a `default.nix` fallback.
+    fn new(files: HashMap<String, String>) -> Self {
         let mut normalized: HashMap<String, Vec<u8>> = HashMap::new();
         for (k, v) in files {
-            let key = normalize(Path::new(&k));
-            let bytes = v.into_bytes();
-            if key != entry_key {
-                normalized.insert(format!("{entry_key}/{key}"), bytes.clone());
-            }
-            normalized.insert(key, bytes);
+            normalized.insert(normalize(Path::new(&k)), v.into_bytes());
         }
         VfsIo {
             files: RefCell::new(normalized),
@@ -120,18 +116,6 @@ impl EvalIO for VfsIo {
         let key = normalize(path);
         let files = self.files.borrow();
         if let Some(bytes) = files.get(&key) {
-            return Ok(Box::new(Cursor::new(bytes.clone())));
-        }
-        // Workaround: tvix-eval's `import` builtin decides whether to
-        // append "default.nix" to a directory import via
-        // `std::path::Path::is_dir()`, which always returns false on
-        // wasm32-unknown-unknown (there is no real filesystem to check).
-        // `import ./some-dir` is therefore silently broken upstream on
-        // wasm — see docs/spikes/A2-snix.md ("import + virtual FS"). We
-        // paper over it here: if `key` isn't itself a file but
-        // `key/default.nix` exists, serve that.
-        let default_key = format!("{key}/default.nix");
-        if let Some(bytes) = files.get(&default_key) {
             return Ok(Box::new(Cursor::new(bytes.clone())));
         }
         Err(io::Error::new(
@@ -242,7 +226,7 @@ fn eval_subexpr(io: Rc<dyn EvalIO>, code: &str) -> Option<tvix_eval::Value> {
 
 fn run_eval(req: EvalRequest) -> EvalResponse {
     let strict = req.strict.unwrap_or(true);
-    let io = Rc::new(VfsIo::new(req.files, &req.entry)) as Rc<dyn EvalIO>;
+    let io = Rc::new(VfsIo::new(req.files)) as Rc<dyn EvalIO>;
     let code = match io.open(Path::new(&req.entry)) {
         Ok(mut r) => {
             let mut s = String::new();

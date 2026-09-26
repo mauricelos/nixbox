@@ -182,6 +182,11 @@ struct TrackedBinding {
     key_slot: KeySlot,
     value_slot: LocalIdx,
     binding: Binding,
+    // NixBox patch: the key's own span, kept only so a later duplicate of
+    // this same key (one `try_merge` can't merge into it — see
+    // `declare_bindings`) can report *this* occurrence's location, the way
+    // CppNix's "attribute 'name' already defined at file:line:col" does.
+    key_span: Span,
 }
 
 impl TrackedBinding {
@@ -249,12 +254,20 @@ impl TrackedBindings {
     }
 
     /// Add a completely new binding to the tracked bindings.
-    fn track_new(&mut self, key_slot: KeySlot, value_slot: LocalIdx, binding: Binding) {
+    fn track_new(&mut self, key_slot: KeySlot, value_slot: LocalIdx, binding: Binding, key_span: Span) {
         self.bindings.push(TrackedBinding {
             key_slot,
             value_slot,
             binding,
+            key_span,
         });
+    }
+
+    /// NixBox patch: the span of an already-tracked binding with this name,
+    /// if any — used to report a duplicate key's *previous* location (see
+    /// `declare_bindings`).
+    fn span_of(&self, name: &str) -> Option<Span> {
+        self.bindings.iter().find(|b| b.matches(name)).map(|b| b.key_span)
     }
 }
 
@@ -452,6 +465,7 @@ impl Compiler<'_, '_> {
                     name,
                     span,
                 },
+                span,
             );
         }
     }
@@ -473,6 +487,26 @@ impl Compiler<'_, '_> {
             if bindings.try_merge(self, span, &key, path.clone(), value.clone()) {
                 // Binding is nested, or already exists and was merged, move on.
                 continue;
+            }
+
+            // NixBox patch: a plain (non-`rec`, non-`let`) attribute set's
+            // flat (non-nested) keys previously had no compile-time
+            // duplicate check at all — `{ a = 1; a = 2; }` only failed
+            // later, at runtime, via the generic (span-less)
+            // `DuplicateAttrsKey` error. `let`/`rec` bindings already catch
+            // this correctly via `declare_local` below, which is why this
+            // is gated to `BindingsKind::Attrs` only. Real Nix reports the
+            // *previous* definition's location here — `try_merge` just
+            // told us this key can't be merged into whatever's already
+            // tracked under this name, so if something IS already tracked,
+            // this is exactly that duplicate.
+            if kind == BindingsKind::Attrs && path.peek().is_none() {
+                if let Some(name) = expr_static_attr_str(&key) {
+                    if let Some(previous_span) = bindings.span_of(&name) {
+                        self.emit_error(&key, ErrorKind::VariableAlreadyDefined(name.to_string(), Some(previous_span)));
+                        continue;
+                    }
+                }
             }
 
             *count += 1;
@@ -528,7 +562,7 @@ impl Compiler<'_, '_> {
                 Binding::Plain { expr: value }
             };
 
-            bindings.track_new(key_slot, value_slot, binding);
+            bindings.track_new(key_slot, value_slot, binding, key_span);
         }
     }
 

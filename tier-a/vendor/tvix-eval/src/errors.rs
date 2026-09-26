@@ -121,8 +121,13 @@ to a missing value in the attribute set(s) included via `with`."#
     UnknownDynamicVariable(String),
 
     /// User is defining the same variable twice at the same depth.
+    // NixQuest patch (see nixbox/README.md): carries the name too, so
+    // CppNix's "attribute 'name' already defined at file:line:col" wording
+    // (used for both `let`-binding and attrset-literal duplicates — real
+    // Nix desugars both the same way) can be reconstructed; the original
+    // upstream variant only carried the previous definition's span.
     #[error("variable has already been defined")]
-    VariableAlreadyDefined(Option<Span>),
+    VariableAlreadyDefined(String, Option<Span>),
 
     /// Attempt to call something that is not callable.
     // NixQuest patch (see nixbox/README.md): carries the offending value's
@@ -668,7 +673,7 @@ impl Error {
             | ErrorKind::DynamicKeyInScope(_)
             | ErrorKind::UnknownStaticVariable
             | ErrorKind::UnknownDynamicVariable(_)
-            | ErrorKind::VariableAlreadyDefined(_)
+            | ErrorKind::VariableAlreadyDefined(..)
             | ErrorKind::NotCallable { .. }
             | ErrorKind::InfiniteRecursion { .. }
             | ErrorKind::ParseErrors(_)
@@ -713,7 +718,7 @@ impl Error {
             ErrorKind::DynamicKeyInScope(_) => "E009",
             ErrorKind::UnknownStaticVariable => "E010",
             ErrorKind::UnknownDynamicVariable(_) => "E011",
-            ErrorKind::VariableAlreadyDefined(_) => "E012",
+            ErrorKind::VariableAlreadyDefined(..) => "E012",
             ErrorKind::NotCallable { .. } => "E013",
             ErrorKind::InfiniteRecursion { .. } => "E014",
             ErrorKind::ParseErrors(_) => "E015",

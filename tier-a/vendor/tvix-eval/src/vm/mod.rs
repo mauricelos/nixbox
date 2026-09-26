@@ -735,10 +735,14 @@ impl<'o> VM<'o> {
 
                 Op::Attrs => self.run_attrset(frame.read_uvarint() as usize, &frame)?,
 
+                // NixBox patch: check `lhs` before `rhs` (real Nix's `//`
+                // forces and type-checks its left operand first) — this
+                // used to check `rhs` first, so e.g. `1 // "a"` reported
+                // the right operand's type instead of the left's.
                 Op::AttrsUpdate => lifted_pop! {
                     self(rhs, lhs) => {
-                        let rhs = rhs.to_attrs().with_span(&frame, self)?;
                         let lhs = lhs.to_attrs().with_span(&frame, self)?;
+                        let rhs = rhs.to_attrs().with_span(&frame, self)?;
                         self.stack.push(Value::attrs(lhs.update(*rhs)))
                     }
                 },
@@ -781,10 +785,15 @@ impl<'o> VM<'o> {
                     }
                 },
 
+                // NixBox patch: check `lhs` before `rhs` (real Nix's `++`
+                // forces and type-checks its left operand first) — this
+                // used to check `rhs` first, so e.g. `"a" ++ "b"` reported
+                // the right operand's type ("b") instead of the left's
+                // ("a"), which is what CppNix 2.28.3 actually reports.
                 Op::Concat => lifted_pop! {
                     self(rhs, lhs) => {
-                        let rhs = rhs.to_list().with_span(&frame, self)?.into_inner();
                         let mut lhs = lhs.to_list().with_span(&frame, self)?.into_inner();
+                        let rhs = rhs.to_list().with_span(&frame, self)?.into_inner();
                         lhs.extend(rhs.into_iter());
                         self.stack.push(Value::List(lhs.into()))
                     }

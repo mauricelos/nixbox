@@ -149,11 +149,13 @@ fn expecting_name(kind: rnix::SyntaxKind) -> Option<&'static str> {
         TOKEN_ELSE => "ELSE",
         TOKEN_THEN => "THEN",
         TOKEN_IN => "IN",
-        TOKEN_SEMICOLON => "\";\"",
-        TOKEN_R_BRACE => "\"}\"",
-        TOKEN_R_PAREN => "\")\"",
-        TOKEN_R_BRACK => "\"]\"",
-        TOKEN_ASSIGN => "\"=\"",
+        // CppNix (bison) quotes the expected token with single quotes, not
+        // double — `expecting ';'`, not `expecting ";"`.
+        TOKEN_SEMICOLON => "';'",
+        TOKEN_R_BRACE => "'}'",
+        TOKEN_R_PAREN => "')'",
+        TOKEN_R_BRACK => "']'",
+        TOKEN_ASSIGN => "'='",
         _ => return None,
     })
 }
@@ -165,6 +167,28 @@ fn expecting_name(kind: rnix::SyntaxKind) -> Option<&'static str> {
 fn range_text(file: &codemap::File, range: rowan::TextRange) -> &str {
     let full = file.source();
     &full[usize::from(range.start())..usize::from(range.end()).min(full.len())]
+}
+
+/// The text of just the *first* token starting at `range.start()`.
+///
+/// `rnix::parser::ParseError::UnexpectedWanted`'s range is not one token —
+/// rnix's recovery keeps bumping tokens until it finds one of the allowed
+/// continuations (see `expect_peek_any` in rnix's parser.rs), so the range
+/// covers everything it skipped. E.g. for `name = "git" version = "x";`
+/// (missing `;` after `"git"`, so `"git" version` parses as one
+/// application expression, and the parser then expects `;` but finds `=`),
+/// the reported range spans `= "x"` — two tokens — not just `=`. CppNix's
+/// bison-generated parser reports only the single unexpected token
+/// (`syntax error, unexpected '='`), so we re-tokenize from the range's
+/// start and take the first token, ignoring the rest of the range.
+fn first_token_text(file: &codemap::File, range: rowan::TextRange) -> &str {
+    let start = usize::from(range.start());
+    let full = file.source();
+    let tail = &full[start.min(full.len())..];
+    match rnix::tokenize(tail).into_iter().next() {
+        Some((_, text)) if !text.is_empty() => &tail[..text.len()],
+        _ => range_text(file, range),
+    }
 }
 
 /// 1-indexed (line, col) of a byte offset into `file`'s source, computed
@@ -203,12 +227,12 @@ fn syntax_message(
     use rnix::parser::ParseError as PE;
     match errors.first() {
         Some(PE::Unexpected(range)) | Some(PE::UnexpectedExtra(range)) => {
-            let text = range_text(file, *range);
+            let text = first_token_text(file, *range);
             let (line, col) = line_col_at(file, usize::from(range.start()));
             (format!("syntax error, unexpected '{text}'"), line, col)
         }
         Some(PE::UnexpectedWanted(_got, range, wanted)) => {
-            let text = range_text(file, *range);
+            let text = first_token_text(file, *range);
             let (line, col) = line_col_at(file, usize::from(range.start()));
             let expecting = wanted.first().copied().and_then(expecting_name);
             let msg = match expecting {
@@ -330,6 +354,22 @@ pub(crate) fn message_for(source: &SourceCode, err: &Error) -> (String, Option<(
         },
 
         ErrorKind::Abort(msg) => format!("evaluation aborted with the following error message: '{msg}'"),
+
+        // Real Nix calls `let`-bindings and attrset entries both
+        // "attributes" internally (they desugar the same way), so a
+        // duplicate of either gets the same wording, with the *previous*
+        // definition's location appended — verified against real
+        // `nix-instantiate` for both a duplicate `let` binding and a
+        // duplicate attrset key (see nixbox/README.md).
+        ErrorKind::VariableAlreadyDefined(name, previous_span) => match previous_span {
+            Some(span) => {
+                let file = source.get_file(*span);
+                let line = source.get_line(*span);
+                let col = source.codemap().look_up_span(*span).begin.column + 1;
+                format!("attribute '{name}' already defined at {}:{line}:{col}", file.name())
+            }
+            None => format!("attribute '{name}' already defined"),
+        },
 
         other => other.to_string(),
     };

@@ -7,12 +7,13 @@
 
 use super::GlobalsMap;
 use genawaiter::rc::Gen;
-use std::rc::Weak;
+use std::rc::{Rc, Weak};
 
 use crate::{
-    ErrorKind, SourceCode, Value,
+    ErrorKind, FileType, SourceCode, Value,
     builtins::coerce_value_to_path,
     generators::pin_generator,
+    io::EvalIO,
     observer::NoOpObserver,
     value::{Builtin, Thunk},
     vm::generators::{self, GenCo},
@@ -23,6 +24,7 @@ async fn import_impl(
     globals: Weak<GlobalsMap>,
     source: SourceCode,
     mut args: Vec<Value>,
+    io: Rc<dyn EvalIO>,
 ) -> Result<Value, ErrorKind> {
     // TODO(sterni): canon_path()?
     let mut path = match coerce_value_to_path(&co, args.pop().unwrap()).await? {
@@ -30,7 +32,12 @@ async fn import_impl(
         Ok(path) => path,
     };
 
-    if path.is_dir() {
+    // NixBox wasm32 patch: `path.is_dir()` used to ask `std::fs` directly,
+    // which is always false on wasm32 (no real filesystem) — `import
+    // ./some-dir` was silently broken (it read the directory itself as a
+    // file instead of appending `default.nix`). Ask the configured
+    // `EvalIO` instead, same as the `Compiler::new` fix in ../mod.rs.
+    if io.file_type(&path).ok() == Some(FileType::Directory) {
         path.push("default.nix");
     }
 
@@ -69,6 +76,7 @@ async fn import_impl(
         &source,
         &file,
         &mut NoOpObserver::default(),
+        &io,
     )
     .map_err(|err| ErrorKind::ImportCompilerError {
         path: path.clone(),
@@ -103,7 +111,7 @@ async fn import_impl(
 /// track source code locations while invoking a compiler.
 // TODO: need to be able to pass through a CompilationObserver, too.
 // TODO: can the `SourceCode` come from the compiler?
-pub(super) fn builtins_import(globals: &Weak<GlobalsMap>, source: SourceCode) -> Builtin {
+pub(super) fn builtins_import(globals: &Weak<GlobalsMap>, source: SourceCode, io: Rc<dyn EvalIO>) -> Builtin {
     // This (very cheap, once-per-compiler-startup) clone exists
     // solely in order to keep the borrow checker happy.  It
     // resolves the tension between the requirements of
@@ -115,7 +123,7 @@ pub(super) fn builtins_import(globals: &Weak<GlobalsMap>, source: SourceCode) ->
         Some("Import the given file and return the Nix value it evaluates to"),
         1,
         move |args| {
-            Gen::new(|co| pin_generator(import_impl(co, globals.clone(), source.clone(), args)))
+            Gen::new(|co| pin_generator(import_impl(co, globals.clone(), source.clone(), args, io.clone())))
         },
     )
 }

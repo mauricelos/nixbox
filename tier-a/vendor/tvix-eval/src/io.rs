@@ -27,7 +27,10 @@ use std::os::unix::ffi::OsStringExt;
 use std::fs::File;
 
 /// Types of files as represented by `builtins.readFileType` and `builtins.readDir` in Nix.
-#[derive(Debug)]
+// NixBox patch: `PartialEq` derive added so callers (the wasm32 `EvalIO`
+// file_type fixes in compiler/mod.rs and compiler/import.rs) can compare
+// it directly instead of a manual match.
+#[derive(Debug, PartialEq, Eq)]
 pub enum FileType {
     Directory,
     Regular,

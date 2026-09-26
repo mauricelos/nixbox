@@ -3,6 +3,7 @@
 #   1. nixbox/tier-a -> wasm32-unknown-unknown, release
 #   2. wasm-bindgen (web target) -> the glue JS + .wasm the app loads
 #   3. nixbox/nixpkgs-lib + nixbox/pkgs -> vfs.json.gz (see build-vfs.mjs)
+#   4. lib/runtime/tier-a/worker.ts -> public/nixbox/worker.js (esbuild)
 #
 # Requires:
 #   rustup target add wasm32-unknown-unknown
@@ -10,7 +11,7 @@
 #     (must match nixbox/tier-a/Cargo.lock's wasm-bindgen version exactly —
 #     wasm-bindgen refuses to process a .wasm built against a different
 #     version of its own runtime support crate)
-#   Node (for build-vfs.mjs)
+#   Node + esbuild (npm's, via npx — for build-vfs.mjs and worker.ts)
 #
 # Nothing here needs network access beyond what `cargo build` itself needs
 # (crates.io, for nixbox/tier-a's own direct dependencies — vendor/tvix-eval
@@ -55,8 +56,27 @@ mv tier-a/pkg-node/nixbox_tier_a.js tier-a/pkg-node/nixbox_tier_a.cjs
 echo "==> vfs.json.gz (nixpkgs lib + pkgs stub)"
 node scripts/build-vfs.mjs
 
+# The worker is built as a plain static asset (not a Vite-bundled
+# `new Worker(new URL("./worker.ts", import.meta.url))`) because the app's
+# framework (vinext, a Next.js-on-Vite layer targeting Cloudflare Workers)
+# rewrites `import.meta.url` in client code to a synthetic, non-navigable
+# `file:///ROOT/...` marker (see its import-meta-url Vite plugin), which
+# `new Worker()` then refuses to load ("cannot be accessed from origin ...")
+# — the browser's same-origin check happens before any network request, so
+# fixing up the URL's origin client-side can't help. Serving a prebuilt,
+# plain-path worker script from public/ sidesteps the whole transform: the
+# runtime just does `new Worker("/nixbox/worker.js")`, identically in dev
+# and production. worker.ts's own `import(glueUrl)` for the wasm glue is a
+# genuinely dynamic (non-static) specifier, so esbuild leaves it as a real
+# runtime `import()` — exactly what's wanted, since that URL is only known
+# at request time (BASE + "nixbox_tier_a.js").
+echo "==> esbuild (lib/runtime/tier-a/worker.ts -> $OUT/worker.js)"
+npx --yes esbuild ../lib/runtime/tier-a/worker.ts \
+  --bundle --format=esm --target=es2022 --platform=browser \
+  --outfile="$OUT/worker.js"
+
 echo "==> sizes (what the browser downloads)"
-for f in "$OUT"/nixbox_tier_a_bg.wasm "$OUT"/nixbox_tier_a.js "$OUT"/vfs.json.gz; do
+for f in "$OUT"/nixbox_tier_a_bg.wasm "$OUT"/nixbox_tier_a.js "$OUT"/vfs.json.gz "$OUT"/worker.js; do
   raw=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
   gz=$(gzip -9 -c "$f" | wc -c)
   br=""
