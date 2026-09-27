@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// Bundles the pinned Nixpkgs `lib/` (nixbox/nixpkgs-lib/lib) and the
-// teaching `pkgs` stub (nixbox/pkgs/default.nix) into one JSON file,
-// gzip-compressed, served at public/nixbox/vfs.json.gz. Loaded lazily by
-// lib/runtime/tier-a and decompressed client-side with
-// `DecompressionStream("gzip")` (see lib/runtime/tier-a/worker.ts) so the
-// static file can be served as-is without relying on a server setting
+// Bundles the pinned Nixpkgs `lib/` (nixpkgs-lib/lib) and the teaching
+// `pkgs` stub (pkgs/default.nix) into one JSON file, gzip-compressed, as
+// vfs.json.gz. Meant to be loaded lazily by a host and decompressed
+// client-side with `DecompressionStream("gzip")`, so the static file can
+// be served as-is without relying on a server setting
 // `Content-Encoding: gzip` on a `.gz` path.
 //
 // Every key is a virtual path exactly as tvix-eval's `EvalIO` (see
@@ -19,7 +18,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(here, "..", "..");
 const nixboxDir = path.resolve(here, "..");
 
 function walk(dir, base, out) {
@@ -42,7 +40,9 @@ const json = JSON.stringify(files);
 const rawBytes = Buffer.byteLength(json, "utf8");
 const gz = gzipSync(Buffer.from(json, "utf8"), { level: 9 });
 
-const outDir = path.join(root, "public", "nixbox");
+const outDir = process.env.NIXBOX_OUT_DIR
+  ? path.resolve(process.env.NIXBOX_OUT_DIR)
+  : path.join(nixboxDir, "dist");
 mkdirSync(outDir, { recursive: true });
 const outPath = path.join(outDir, "vfs.json.gz");
 writeFileSync(outPath, gz);

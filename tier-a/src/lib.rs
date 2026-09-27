@@ -2,12 +2,11 @@
 //! evaluator, plus a `derivation`/`derivationStrict` builtin built on
 //! `nix-compat`, for use from a Web Worker via wasm-bindgen.
 //!
-//! Productionized from `spikes/snix-wasm/` (see `docs/spikes/A2-snix.md`).
-//! The public surface (`eval_json`) matches `EvalRequest` / `EvalResult` in
-//! `lib/runtime/types.ts`, serialized as JSON so the worker glue can stay
-//! backend-agnostic.
+//! The public surface (`eval_json`) matches the `EvalRequest` / `EvalResult`
+//! JSON shape documented in the top-level README, serialized as JSON so a
+//! host's worker glue can stay backend-agnostic.
 //!
-//! See `nixbox/README.md` for the vendoring rationale, the `tvix-eval`
+//! See the top-level README for the vendoring rationale, the `tvix-eval`
 //! patch (a few `ErrorKind` variants now carry the offending value's
 //! printed text) and the CppNix error-message mapping this file implements.
 

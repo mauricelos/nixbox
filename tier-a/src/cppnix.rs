@@ -1,8 +1,7 @@
 //! Maps tvix-eval's `Error`/`ErrorKind` to CppNix 2.28's exact primary
 //! error-message wording (the last `error: …` line `nix-instantiate --eval
-//! --strict` prints — see `spikes/parity/README.md`), and to the
-//! `NixErrorClass` the error explainer (`lib/runtime/explain.ts`) matches
-//! on.
+//! --strict` prints), and to a small `NixErrorClass` enum a host-side error
+//! explainer can match on.
 //!
 //! tvix-eval's own `ErrorKind` messages are semantically equivalent but
 //! worded differently (e.g. "variable not found" vs. CppNix's "undefined
@@ -377,7 +376,7 @@ pub(crate) fn message_for(source: &SourceCode, err: &Error) -> (String, Option<(
 }
 
 /// Classify a leaf `ErrorKind` into the `NixErrorClass` the error explainer
-/// (`lib/runtime/explain.ts`) and parity suite key off. Independent of
+/// (a host-side error explainer) and the parity suite key off. Independent of
 /// whatever CppNix wording was achieved above — every class here matches
 /// tvix's error *kind* directly, which is reliable even when the message
 /// text isn't (yet) verbatim.
@@ -469,8 +468,8 @@ pub(crate) fn assert_operand_text(value: &Value) -> String {
 /// reachable outside a running VM — see docs/spikes/A2-snix.md, "What
 /// doesn't work"), so this walks the already-forced tree directly instead.
 /// Functions and other non-JSON-representable values yield `None`, per
-/// `EvalSuccess.json`'s "when representable" contract in
-/// lib/runtime/types.ts.
+/// the JSON response's "when representable" contract for its `json`
+/// field (see the top-level README).
 pub(crate) fn to_json(value: &Value) -> Option<serde_json::Value> {
     use serde_json::Value as J;
     match value {

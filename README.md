@@ -1,115 +1,58 @@
-# NixBox tier A
+# NixBox
 
-The real Nix language evaluator, running client-side. This is Tier A of the
-"NixBox" design in `docs/PLAN.md`: `tvix-eval` (the evaluator lineage that
-became `snix-eval`) compiled to `wasm32-unknown-unknown`, running in a
-dedicated Web Worker behind the app's `NixRuntime` interface
-(`lib/runtime/types.ts`). It productionizes the spike at
-`docs/spikes/A2-snix.md` (the spike crate that lived at `spikes/snix-wasm/`
-has been moved here and superseded).
+A real Nix language evaluator that runs entirely client-side, in a Web
+Worker, with no server and no real Nix store. It's `tvix-eval` (the
+evaluator lineage that has since become TVL's `snix-eval`) compiled to
+`wasm32-unknown-unknown`, plus a from-scratch pass that makes its output
+match CppNix 2.28's exact error wording and value printing, and a native
+`derivation` builtin that produces real `.drv`/output paths without ever
+running a build.
+
+It was built to let a Nix tutorial evaluate arbitrary learner-written Nix
+expressions in the browser and show output indistinguishable from a real
+`nix-instantiate`/`nix eval` — but nothing here is tutorial-specific: it's
+a general-purpose, sandboxed Nix evaluator for the browser (or Node).
 
 No real Nix store, no builds, no network access at eval time — everything
-runs in an in-memory virtual filesystem per request.
+runs against an in-memory virtual filesystem (VFS) built per request.
 
-## Layout
+## What's in here
 
 - `tier-a/` — the Rust crate (`nixbox-tier-a`), compiled to wasm.
   - `src/lib.rs` — `EvalRequest`/`EvalResponse`, the in-memory `EvalIO` VFS
-    (`VfsIo`), and `run_eval`, the eval entry point. `VfsIo` no longer needs
-    any wasm-specific workarounds (it did briefly — see the patches below).
+    (`VfsIo`), and `run_eval`, the eval entry point.
   - `src/cppnix.rs` — maps `tvix_eval::ErrorKind` (and rnix parser errors)
-    to CppNix 2.28's exact primary-message wording, using spans/source text
-    to recover details CppNix's message needs but tvix's `ErrorKind` alone
-    doesn't carry (e.g. the actual operand values in an `assert` failure).
-    This is the highest-value, most novel part of this crate.
+    to CppNix 2.28's exact primary-message wording, using spans/source
+    text to recover details CppNix's message needs but tvix's `ErrorKind`
+    alone doesn't carry (e.g. the actual operand values in an `assert`
+    failure). This is the highest-value, most novel part of this crate.
   - `src/pkgs_builtins.rs` — a native `derivationStrict` builtin producing
     real `.drv`/output paths via `nix-compat`, backed by an in-memory
     "known paths" store (no real store or build).
   - `vendor/tvix-eval/`, `vendor/nix-compat/` — vendored (not git/registry)
     copies of the pinned tvix commit (`9fbca101331eecbf5c1cd44861f3d24aff101b82`,
-    the public `tvlfyi/tvix` mirror — `snix-eval`'s upstream home,
-    `git.snix.dev`, is blocked by network policy), trimmed to what's needed
-    for wasm32 and patched (all called out at the top of `tier-a/Cargo.toml`
-    too):
-    - A few `ErrorKind` variants (`TypeError`, `NotCallable`,
-      `NotCoercibleToString`) gained a `value: String` field, so
-      `cppnix.rs` can put the actual value in the message the way CppNix
-      does; `VariableAlreadyDefined` gained a `name: String` field (see
-      below).
-    - `Compiler::new` no longer calls `std::env::current_dir()` (unavailable
-      on wasm32) when compiling with no source location — needed for
-      `add_src_builtin` (the well-known `derivation` function) to work at
-      all on wasm32.
-    - **`Compiler::new`'s and the `import` builtin's directory/file checks
-      now go through the configured `EvalIO` instead of `std::fs`.**
-      `Compiler::new` decided whether to pop a path's last segment
-      (`root_dir.is_file()`) and `import` decided whether to append
-      `default.nix` (`path.is_dir()`) by asking the *host's real
-      filesystem* directly — always false on wasm32 (there is no real
-      filesystem), so a nested relative import (`check.nix` imports
-      `./learner.nix`, which imports `./pkgs.nix`) kept accumulating a path
-      segment per import level instead of resolving normally, and `import
-      ./some-dir` never found its `default.nix`. Both are now threaded an
-      `Rc<dyn EvalIO>` (from `EvaluationBuilder`'s own `io_handle`, the same
-      one `VfsIo` implements) and ask *it* instead — see the "NixBox
-      wasm32 patch" comments in `vendor/tvix-eval/src/compiler/mod.rs` and
-      `compiler/import.rs`. This is also correct off wasm32 (`StdIO`'s
-      `file_type` uses real `std::fs::symlink_metadata`, equivalent to the
-      old checks), so it fixed the bug at its root instead of adding a
-      third layer of `VfsIo` aliasing — the two `VfsIo` workarounds this
-      replaced (serving every file at `"<entry>/<name>"` too, and a
-      `default.nix` fallback in `open()`) have been removed as
-      unnecessary.
-    - **Duplicate-attribute wording.** `{ greeting = "hi"; greeting = "yo"; }`
-      used to report tvix's generic `variable has already been defined`
-      (no name, no location) via `ErrorKind::VariableAlreadyDefined`, which
-      only actually fired for `let`/`rec` bindings — a plain (non-`rec`)
-      attrset's flat duplicate keys had *no* compile-time check at all,
-      falling through to an even less specific runtime-only
-      `DuplicateAttrsKey` error. Real Nix reports both cases identically
-      (`let` and attrset bindings desugar the same way in its own
-      implementation): `attribute 'name' already defined at
-      file:line:col`, naming the *previous* definition's location.
-      `VariableAlreadyDefined` gained a `name` field, and
-      `compiler/bindings.rs`'s plain-attrset path (`declare_bindings`) now
-      also runs this same check for a flat (non-nested) key repeated
-      within one non-recursive attrset literal, using the same error kind
-      and CppNix-worded message as the `let`/`rec` case. (A duplicate
-      buried inside a *nested* attrpath — `{ a.b = 1; a.b = 2; }` — still
-      falls back to the older, span-less `DuplicateAttrsKey` message; not
-      required by the corpus this fixed, and left as a smaller documented
-      gap rather than pursued further.)
-    - **Binary-operator operand order.** `Op::Concat` (`++`) and
-      `Op::AttrsUpdate` (`//`) used to type-check their *right* operand
-      before their left one, so e.g. `"a" ++ "b"` reported the right
-      operand's type (`"b"`) instead of the left's (`"a"`) — the opposite
-      of CppNix, which always forces and checks its left operand first.
-      Both ops now check `lhs` before `rhs`. (Arithmetic `+`/`-`/`*`/`/`
-      were already lhs-first; comparison operators use a different,
-      unrelated error shape — `Incomparable{lhs,rhs}`, reporting both
-      types at once — not affected by this bug.)
-    - **Syntax-error wording.** `rnix::parser::ParseError::UnexpectedWanted`'s
-      reported range is not one token — rnix's error recovery keeps
-      bumping tokens until it finds an allowed continuation, so the range
-      covers everything it skipped (e.g. `= "2.47.0"`, two tokens, for a
-      single unexpected `=`). CppNix's bison-generated parser reports only
-      the one offending token. `cppnix.rs`'s `first_token_text` now
-      re-tokenizes from the range's start and takes just the first token.
-      Separately, `expecting_name`'s punctuation table quoted the expected
-      token with double quotes (`expecting ";"`); CppNix uses single quotes
-      (`expecting ';'`).
+    from the public `tvlfyi/tvix` mirror), trimmed to what's needed for
+    wasm32 and patched, all called out at the top of `tier-a/Cargo.toml`:
+    a few `ErrorKind` variants gained the fields needed to print CppNix's
+    exact wording; `Compiler::new` and the `import` builtin's
+    directory/file checks now go through the configured `EvalIO` instead
+    of `std::fs` (there is no real filesystem on wasm32); duplicate-key
+    detection, binary-operator operand order, and syntax-error token
+    ranges were adjusted to match CppNix. See the comments at each site
+    for the full story.
   - `examples/parity.rs`, `examples/pkgs_check.rs` — native (non-wasm) dev
     tools for fast iteration; `cargo run --example parity` runs the same
-    corpus as the vitest suite, natively, in ~1s instead of a full wasm
-    rebuild. (`35-import` fails there only — see "Known gaps" below.)
-  - `test/parity.test.ts` — the vitest parity suite; see "Testing".
-  - `pkg-node/` — a committed `wasm-bindgen --target nodejs` build, used
-    only by the parity test suite (Node/vitest can't load the `--target
-    web` build the browser uses).
-- `nixpkgs-lib/` — a vendored, pinned copy of nixpkgs' `lib/` (commit
-  `ac62194c3917d5f474c1a844b6fd6da2db95077d`, `nixos-25.05`; see its own
-  `README.md` for the exact pin and re-pin instructions), reachable in the
-  VFS as `import <nixpkgs/lib>` and `(import <nixpkgs> {}).lib`.
+    corpus as the test suite, natively, in about a second instead of a
+    full wasm rebuild.
+  - `test/parity.test.ts` + `test/snippets/` — the parity test suite (see
+    "Testing" below).
+  - `pkg-node/` — a `wasm-bindgen --target nodejs` build, used only by the
+    parity test suite (Node can't load the `--target web` build a browser
+    uses). Regenerated by `build.sh` / `nix flake check`, not committed.
+- `nixpkgs-lib/` — a vendored, pinned copy of nixpkgs' `lib/` (MIT
+  licensed; see `nixpkgs-lib/README.md` for the exact pin and re-pin
+  instructions), reachable in the VFS as `import <nixpkgs/lib>` and
+  `(import <nixpkgs> {}).lib`.
 - `pkgs/default.nix` — a small **teaching** `pkgs`, reachable as `import
   <nixpkgs> {}`: `stdenv.mkDerivation`, `mkShell`, `writeShellApplication`,
   `writeText`, `runCommand`, `callPackage`, `fetchurl`/`fetchFromGitHub`,
@@ -118,16 +61,61 @@ runs in an in-memory virtual filesystem per request.
   bash. Not real nixpkgs — a stub with plausible `pname`/`version`/`meta`,
   clearly marked as such in its own header comment.
 - `scripts/build-vfs.mjs` — bundles `nixpkgs-lib/lib` + `pkgs/default.nix`
-  into `public/nixbox/vfs.json.gz` (gzip, one file the worker fetches once
-  and decompresses client-side with `DecompressionStream`).
-- `build.sh` — rebuilds every committed artifact from source (see below).
+  into `vfs.json.gz` (gzip, one file a host fetches once and decompresses
+  client-side with `DecompressionStream`).
+- `build.sh` — rebuilds every output artifact from source without Nix (see
+  below); `flake.nix` does the same thing reproducibly.
 
-The Web Worker + host-side runtime that load and drive this crate live at
-`lib/runtime/tier-a/` (worker.ts, runtime.ts) — see that directory's own
-doc comments. `lib/runtime/select.ts` returns tier A for any lesson with
-`runtime: "eval"`, lazily (nothing loads until the first `eval()` call).
+## Using it from a web app
+
+NixBox has no opinion about your app framework. The published artifact
+(see "Building" and the GitHub Releases page) is three files:
+
+- `nixbox_tier_a.js` + `nixbox_tier_a_bg.wasm` — a `wasm-bindgen --target
+  web` build: an ES module you `import()` and a `.wasm` you pass to its
+  default export.
+- `vfs.json.gz` — the gzip-compressed lib+pkgs VFS bundle.
+
+The intended integration is a dedicated Web Worker: on its first eval
+request, the worker `import()`s the glue module, `fetch()`es and
+decompresses the VFS bundle once, and keeps both in memory for subsequent
+requests, so the ~2 MB payload is paid once, lazily, only by users who
+actually trigger an evaluation. The worker talks to the rest of the app
+only through `postMessage` (an `EvalRequest` in, an `EvalResponse` back),
+so nothing about the host app's own code needs to be open source for this
+to work — see "Licence" below.
+
+A minimal request/response shape (see `tier-a/src/lib.rs` for the
+authoritative version):
+
+```ts
+type EvalRequest = { files: Record<string, string>; entry: string };
+type EvalResponse = {
+  ok: boolean;
+  printed?: string | null;   // pretty-printed value, ok: true
+  json?: unknown;            // JSON-able value, ok: true
+  message?: string | null;   // CppNix-style "error: ..." text, ok: false
+  line?: number | null;
+  col?: number | null;
+};
+```
 
 ## Building
+
+### With Nix (recommended, reproducible)
+
+```sh
+nix build .#          # -> ./result/{nixbox_tier_a.js,nixbox_tier_a_bg.wasm,vfs.json.gz}
+nix flake check        # builds the package and runs the parity suite
+```
+
+The flake pins its own Rust toolchain (`wasm32-unknown-unknown` target)
+and a `wasm-bindgen-cli` build matching `tier-a/Cargo.lock`'s resolved
+`wasm-bindgen` version exactly — wasm-bindgen refuses to process a `.wasm`
+built against a different version of its own runtime-support crate — so
+the build needs nothing preinstalled beyond Nix itself.
+
+### Without Nix
 
 ```sh
 rustup target add wasm32-unknown-unknown
@@ -135,52 +123,49 @@ cargo install wasm-bindgen-cli --version 0.2.129 --locked   # must match
                                                               # tier-a/Cargo.lock's
                                                               # resolved wasm-bindgen
                                                               # version exactly
-./nixbox/build.sh
+./build.sh
 ```
 
-This needs no network access beyond crates.io for `nixbox-tier-a`'s own
-direct dependencies (the vendored crates need no `git.snix.dev` or GitHub
-access). It regenerates, all under version control:
+Needs no network access beyond crates.io for `nixbox-tier-a`'s own direct
+dependencies (the vendored crates need no `git.snix.dev` or GitHub
+access). It regenerates, into `dist/`:
 
-- `public/nixbox/nixbox_tier_a.js` + `nixbox_tier_a_bg.wasm` — the
-  `--target web` build the browser loads (glue JS: 8.8 KB / gzip 2.6 KB;
-  wasm: raw 2.0 MB / gzip 627 KB).
-- `public/nixbox/vfs.json.gz` — the lib+pkgs VFS bundle (234 files, raw JSON
-  961 KiB, gzip 221 KiB).
-- `nixbox/tier-a/pkg-node/` — the `--target nodejs` build, for the parity
-  test suite only (not served to the browser).
+- `nixbox_tier_a.js` + `nixbox_tier_a_bg.wasm` — the `--target web` build
+  a browser loads (glue JS: 8.8 KB / gzip 2.6 KB; wasm: raw 2.0 MB / gzip
+  627 KB).
+- `vfs.json.gz` — the lib+pkgs VFS bundle (234 files, raw JSON 961 KiB,
+  gzip 221 KiB).
+- `tier-a/pkg-node/` — the `--target nodejs` build, for the parity test
+  suite only (not meant to be served to a browser).
 
-Cold-load total for the browser: wasm + glue + VFS ≈ 2.24 MB raw / ≈ 850 KB
-gzip. It's fetched lazily (only when a lesson needs `runtime: "eval"`),
-under a dedicated module Worker, with `lib/runtime/tier-a`'s
-`onLoadProgress` available for a progress bar.
+Cold-load total for a browser: wasm + glue + VFS ≈ 2.24 MB raw / ≈ 850 KB
+gzip.
 
 ## Testing
 
 ```sh
-npm test    # runs everything under vitest.config.ts's `include`, which
-            # now covers nixbox/**/*.test.ts — no Rust toolchain needed,
-            # it runs against the committed nixbox/tier-a/pkg-node/ build.
+nix flake check
 ```
 
-`nixbox/tier-a/test/parity.test.ts` runs every snippet in
-`nixbox/tier-a/test/snippets/` through the evaluator and checks it against its
-`.expected` file: value-exact (the `printed` field) for a value snippet,
-primary-message-exact (the last `error: ...` line) for an error snippet.
-35/35 required snippets pass. Two bonus snippets beyond the required
-corpus (`36-select-on-function`, `37-elemat-oob`) are marked `it.fails` —
-known, documented, accepted gaps (see the comment above `KNOWN_GAPS` in
-that file); the suite goes red the day either one starts passing, as a
-nudge to promote it out of that list.
+`tier-a/test/parity.test.ts` (and the small standalone runner
+`nix flake check` uses) runs every snippet in `tier-a/test/snippets/`
+through the evaluator and checks it against its `.expected` file:
+value-exact (the `printed` field) for a value snippet, primary-message
+-exact (the last `error: ...` line) for an error snippet. 35/35 required
+snippets pass. Two bonus snippets beyond the required corpus
+(`36-select-on-function`, `37-elemat-oob`) are marked as expected failures
+— known, documented, accepted gaps (see the comment above `KNOWN_GAPS` in
+`parity.test.ts`); the suite goes red the day either one starts passing,
+as a nudge to promote it out of that list.
 
 ## Known gaps vs. real Nix
 
 - **Function values in *error-context* text**: CppNix prints
   `«lambda @ file:line:col»`; tvix-eval prints `<LAMBDA>` in that one
   context. (Note: `<LAMBDA>` *is* the correct rendering for ordinary value
-  **printing** — `printed`/`json` — which is what the brief actually
-  requires; this gap is specifically about a function value appearing
-  inside an error message.)
+  **printing** — `printed`/`json` — which is what most consumers actually
+  need; this gap is specifically about a function value appearing inside
+  an error message.)
 - **`elemAt` out-of-bounds wording**: CppNix names the builtin and the
   list's size (`'builtins.elemAt' called with index 5 on a list of size
   2`); tvix's `IndexOutOfBounds` `ErrorKind` carries neither, so the
@@ -207,3 +192,34 @@ Everything else in the required 35-snippet parity corpus — including
 `nix-instantiate`), `<nixpkgs>`/`<nixpkgs/lib>` resolution, `assert`
 operand values, syntax-error line/col, and `builtins.trace` — matches real
 Nix 2.28.3 exactly.
+
+## Releases
+
+Tagging `vX.Y.Z` builds the Nix package in CI and attaches
+`nixbox-X.Y.Z.tar.gz` (the three files above) to a GitHub release. Anyone
+consuming NixBox from a flake, a download script, or by hand should pin a
+release tag, not a branch.
+
+## Licence
+
+NixBox is licensed under the **GNU General Public License v3.0** (see
+`LICENSE`), inherited from `tvix-eval`/`snix-eval`, which it vendors and
+modifies. Credit and thanks to:
+
+- the [TVL (The Virus Lounge)](https://tvl.fyi) project and its `tvix`
+  evaluator, `tvix-eval`, from which this crate's vendored evaluator
+  descends (public mirror: `tvlfyi/tvix`);
+- [`snix`](https://snix.dev), TVL's evaluator's continuation, for the
+  ongoing work this crate's vendored copy is a snapshot of.
+
+`nixpkgs-lib/` is a vendored copy of nixpkgs' `lib/`, which is separately
+licensed **MIT** by the NixOS/nixpkgs project — see
+`nixpkgs-lib/COPYING`. It is not covered by NixBox's own GPL-3.0 licence.
+
+Because NixBox runs as an isolated Web Worker communicating only via
+`postMessage`, and is built and shipped as a standalone artifact (not
+statically or dynamically linked into a host app's own binary or bundle),
+consuming it from a proprietary application does not require that
+application's own source to be GPL-licensed. Host applications should
+nonetheless credit NixBox and link to this repository, as GPL-3.0 requires
+for any distributed copy or modification of NixBox itself.

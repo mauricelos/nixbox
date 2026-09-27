@@ -1,0 +1,6 @@
+/dist/
+/result
+/result-*
+/tier-a/target/
+/tier-a/pkg-node/
+node_modules/
